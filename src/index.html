@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Анализатор Объемов Торговых Пар</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          sans-serif;
+        margin: 0;
+        padding: 0;
+        background: linear-gradient(
+          135deg,
+          #1e3a8a 0%,
+          #1e40af 50%,
+          #3b82f6 100%
+        );
+        color: white;
+        min-height: 100vh;
+      }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .header {
+        text-align: center;
+        margin-bottom: 40px;
+      }
+      .status {
+        background: rgba(0, 0, 0, 0.3);
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+      }
+      .loading {
+        text-align: center;
+        padding: 40px;
+      }
+      .spinner {
+        border: 4px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top: 4px solid white;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 20px;
+      }
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>📊 Анализатор Объемов Торговых Пар</h1>
+        <p>Система мониторинга торговых пар Bybit</p>
+      </div>
+
+      <div class="status">
+        <h2>Статус системы</h2>
+        <div id="status-content">
+          <div class="loading">
+            <div class="spinner"></div>
+            <p>Инициализация системы...</p>
+          </div>
+        </div>
+      </div>
+
+      <div
+        id="info"
+        style="
+          background: rgba(0, 0, 0, 0.3);
+          padding: 20px;
+          border-radius: 10px;
+        "
+      >
+        <h3>Информация о системе</h3>
+        <ul>
+          <li>Автоматическая загрузка торговых пар с биржи Bybit</li>
+          <li>Фильтрация по падению цены за настраиваемый период</li>
+          <li>Анализ объемов в реальном времени</li>
+          <li>Уведомления о превышении объемов</li>
+          <li>Веб-интерфейс для управления и мониторинга</li>
+        </ul>
+
+        <h4>Настройки (файл .env):</h4>
+        <ul>
+          <li>
+            <strong>PRICE_CHECK_INTERVAL_MINUTES</strong> - интервал проверки
+            цен (по умолчанию: 5 минут)
+          </li>
+          <li>
+            <strong>PRICE_HISTORY_DAYS</strong> - период для сравнения цен (по
+            умолчанию: 30 дней)
+          </li>
+          <li>
+            <strong>PRICE_DROP_PERCENTAGE</strong> - минимальное падение цены в
+            % (по умолчанию: 10%)
+          </li>
+          <li>
+            <strong>VOLUME_MULTIPLIER</strong> - множитель для алертов по объему
+            (по умолчанию: 2.0)
+          </li>
+          <li>
+            <strong>MIN_VOLUME_USDT</strong> - минимальный объем для анализа (по
+            умолчанию: 1000 USDT)
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <script>
+      // Простая проверка статуса системы
+      async function checkStatus() {
+        try {
+          const response = await fetch('/api/stats');
+          const data = await response.json();
+
+          document.getElementById('status-content').innerHTML = `
+                    <p>✅ Система работает</p>
+                    <p>Торговых пар в наблюдении: <strong>${
+                      data.pairs_count || 0
+                    }</strong></p>
+                    <p>Всего свечей обработано: <strong>${
+                      data.total_candles || 0
+                    }</strong></p>
+                    <p>Алертов создано: <strong>${
+                      data.alerts_count || 0
+                    }</strong></p>
+                    <p>Последнее обновление: ${
+                      data.last_update
+                        ? new Date(data.last_update).toLocaleString('ru-RU')
+                        : 'Нет данных'
+                    }</p>
+                `;
+        } catch (error) {
+          document.getElementById('status-content').innerHTML = `
+                    <p>❌ Ошибка подключения к системе</p>
+                    <p>Проверьте, что сервер запущен</p>
+                `;
+        }
+      }
+
+      // Проверяем статус каждые 5 секунд
+      checkStatus();
+      setInterval(checkStatus, 5000);
+    </script>
+  </body>
+</html>
