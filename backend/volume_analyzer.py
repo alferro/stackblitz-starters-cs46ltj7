@@ -7,8 +7,9 @@ import statistics
 logger = logging.getLogger(__name__)
 
 class VolumeAnalyzer:
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, telegram_bot=None):
         self.db_manager = db_manager
+        self.telegram_bot = telegram_bot
         self.settings = {
             'analysis_hours': int(os.getenv('ANALYSIS_HOURS', 1)),
             'offset_minutes': int(os.getenv('OFFSET_MINUTES', 0)),
@@ -55,12 +56,7 @@ class VolumeAnalyzer:
             volume_ratio = current_volume_usdt / average_volume if average_volume > 0 else 0
             
             if volume_ratio >= self.settings['volume_multiplier']:
-                # Проверяем, есть ли недавние алерты для этого символа
-                recent_alert = await self.db_manager.get_recent_alert(
-                    symbol, 
-                    self.settings['alert_grouping_minutes']
-                )
-                
+                # Создаем данные алерта
                 alert_data = {
                     'symbol': symbol,
                     'alert_type': 'volume_spike',
@@ -72,16 +68,32 @@ class VolumeAnalyzer:
                     'message': f"Объем превышен в {volume_ratio:.2f}x раз"
                 }
                 
-                if recent_alert:
-                    # Обновляем существующий алерт
-                    await self.db_manager.update_grouped_alert(recent_alert['id'], alert_data)
+                # Проверяем, есть ли недавняя группа алертов для этого символа
+                recent_group = await self.db_manager.get_recent_alert_group(
+                    symbol, 
+                    self.settings['alert_grouping_minutes']
+                )
+                
+                if recent_group:
+                    # Обновляем существующую группу
+                    await self.db_manager.update_alert_group(recent_group['id'], alert_data)
+                    await self.db_manager.save_alert(recent_group['id'], alert_data)
+                    
                     alert_data['is_grouped'] = True
-                    alert_data['group_count'] = recent_alert.get('alert_count', 1) + 1
+                    alert_data['group_id'] = recent_group['id']
+                    alert_data['group_count'] = recent_group['alert_count'] + 1
                 else:
-                    # Создаем новый алерт
-                    await self.db_manager.save_alert(alert_data)
+                    # Создаем новую группу
+                    group_id = await self.db_manager.create_alert_group(alert_data)
+                    await self.db_manager.save_alert(group_id, alert_data)
+                    
                     alert_data['is_grouped'] = False
+                    alert_data['group_id'] = group_id
                     alert_data['group_count'] = 1
+                    
+                    # Отправляем в Telegram только новые группы алертов
+                    if self.telegram_bot:
+                        await self.telegram_bot.send_alert(alert_data)
                 
                 # Обновляем статистику
                 self.stats['alerts_count'] += 1

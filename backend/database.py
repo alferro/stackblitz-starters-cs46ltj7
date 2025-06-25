@@ -76,10 +76,29 @@ class DatabaseManager:
                 )
             """)
 
-            # Создаем таблицу для хранения алертов с группировкой
+            # Создаем таблицу для групп алертов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS alert_groups (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    alert_type VARCHAR(50) NOT NULL,
+                    first_alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    alert_count INTEGER DEFAULT 1,
+                    max_volume_ratio DECIMAL(10, 2) NOT NULL,
+                    max_price DECIMAL(20, 8) NOT NULL,
+                    max_volume_usdt DECIMAL(20, 8) NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Создаем таблицу для отдельных алертов в группах
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS alerts (
                     id SERIAL PRIMARY KEY,
+                    group_id INTEGER REFERENCES alert_groups(id) ON DELETE CASCADE,
                     symbol VARCHAR(20) NOT NULL,
                     alert_type VARCHAR(50) NOT NULL,
                     price DECIMAL(20, 8) NOT NULL,
@@ -87,11 +106,8 @@ class DatabaseManager:
                     current_volume_usdt DECIMAL(20, 8) NOT NULL,
                     average_volume_usdt DECIMAL(20, 8) NOT NULL,
                     message TEXT,
-                    alert_count INTEGER DEFAULT 1,
-                    first_alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    telegram_sent BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
@@ -107,13 +123,13 @@ class DatabaseManager:
             """)
 
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_alerts_symbol_time 
-                ON alerts(symbol, created_at)
+                CREATE INDEX IF NOT EXISTS idx_alert_groups_symbol_time 
+                ON alert_groups(symbol, last_alert_time)
             """)
 
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_alerts_symbol_last_time 
-                ON alerts(symbol, last_alert_time)
+                CREATE INDEX IF NOT EXISTS idx_alerts_group_time 
+                ON alerts(group_id, created_at)
             """)
 
             cursor.close()
@@ -147,34 +163,6 @@ class DatabaseManager:
 
                 logger.info("Новые колонки добавлены в таблицу watchlist")
 
-            # Проверяем и добавляем новые колонки в таблицу alerts для группировки
-            cursor.execute("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'alerts' AND column_name = 'alert_count'
-            """)
-
-            if not cursor.fetchone():
-                logger.info("Добавление колонок для группировки алертов...")
-
-                cursor.execute("""
-                    ALTER TABLE alerts 
-                    ADD COLUMN IF NOT EXISTS alert_count INTEGER DEFAULT 1,
-                    ADD COLUMN IF NOT EXISTS first_alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    ADD COLUMN IF NOT EXISTS last_alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                """)
-
-                # Обновляем существующие записи
-                cursor.execute("""
-                    UPDATE alerts 
-                    SET first_alert_time = created_at, 
-                        last_alert_time = created_at,
-                        updated_at = created_at
-                    WHERE first_alert_time IS NULL
-                """)
-
-                logger.info("Колонки для группировки алертов добавлены")
-
             cursor.close()
 
         except Exception as e:
@@ -204,7 +192,7 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
-                SELECT symbol, is_active, price_drop_percentage, 
+                SELECT id, symbol, is_active, price_drop_percentage, 
                        current_price, historical_price, created_at, updated_at
                 FROM watchlist 
                 ORDER BY updated_at DESC
@@ -240,14 +228,30 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка добавления в watchlist: {e}")
 
-    async def remove_from_watchlist(self, symbol: str):
-        """Удалить торговую пару из watchlist"""
+    async def update_watchlist_item(self, item_id: int, symbol: str, is_active: bool):
+        """Обновить элемент watchlist"""
         try:
             cursor = self.connection.cursor()
             cursor.execute("""
-                UPDATE watchlist SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
-                WHERE symbol = %s
-            """, (symbol,))
+                UPDATE watchlist 
+                SET symbol = %s, is_active = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (symbol, is_active, item_id))
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления watchlist: {e}")
+
+    async def remove_from_watchlist(self, symbol: str = None, item_id: int = None):
+        """Удалить торговую пару из watchlist"""
+        try:
+            cursor = self.connection.cursor()
+            
+            if item_id:
+                cursor.execute("DELETE FROM watchlist WHERE id = %s", (item_id,))
+            elif symbol:
+                cursor.execute("DELETE FROM watchlist WHERE symbol = %s", (symbol,))
 
             cursor.close()
 
@@ -297,16 +301,17 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка сохранения данных свечи: {e}")
 
-    async def get_recent_alert(self, symbol: str, minutes: int) -> Optional[Dict]:
-        """Получить недавний алерт для символа в указанном временном окне"""
+    async def get_recent_alert_group(self, symbol: str, minutes: int) -> Optional[Dict]:
+        """Получить недавнюю группу алертов для символа"""
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             
             time_threshold = datetime.now() - timedelta(minutes=minutes)
             
             cursor.execute("""
-                SELECT * FROM alerts 
+                SELECT * FROM alert_groups 
                 WHERE symbol = %s 
+                AND is_active = TRUE
                 AND last_alert_time >= %s
                 ORDER BY last_alert_time DESC 
                 LIMIT 1
@@ -318,32 +323,91 @@ class DatabaseManager:
             return dict(result) if result else None
 
         except Exception as e:
-            logger.error(f"Ошибка получения недавнего алерта: {e}")
+            logger.error(f"Ошибка получения недавней группы алертов: {e}")
             return None
 
-    async def save_alert(self, alert_data: Dict):
-        """Сохранение нового алерта в базу данных"""
+    async def create_alert_group(self, alert_data: Dict) -> int:
+        """Создание новой группы алертов"""
         try:
             cursor = self.connection.cursor()
             
             now = datetime.now()
             
             cursor.execute("""
-                INSERT INTO alerts 
-                (symbol, alert_type, price, volume_ratio, current_volume_usdt, 
-                 average_volume_usdt, message, alert_count, first_alert_time, last_alert_time)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO alert_groups 
+                (symbol, alert_type, first_alert_time, last_alert_time, 
+                 alert_count, max_volume_ratio, max_price, max_volume_usdt)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
             """, (
+                alert_data['symbol'],
+                alert_data.get('alert_type', 'volume_spike'),
+                now,
+                now,
+                1,
+                alert_data['volume_ratio'],
+                alert_data['price'],
+                alert_data['current_volume_usdt']
+            ))
+
+            group_id = cursor.fetchone()[0]
+            cursor.close()
+            
+            return group_id
+
+        except Exception as e:
+            logger.error(f"Ошибка создания группы алертов: {e}")
+            return None
+
+    async def update_alert_group(self, group_id: int, alert_data: Dict):
+        """Обновление группы алертов"""
+        try:
+            cursor = self.connection.cursor()
+            
+            now = datetime.now()
+            
+            cursor.execute("""
+                UPDATE alert_groups 
+                SET alert_count = alert_count + 1,
+                    last_alert_time = %s,
+                    updated_at = %s,
+                    max_volume_ratio = GREATEST(max_volume_ratio, %s),
+                    max_price = %s,
+                    max_volume_usdt = GREATEST(max_volume_usdt, %s)
+                WHERE id = %s
+            """, (
+                now,
+                now,
+                alert_data['volume_ratio'],
+                alert_data['price'],
+                alert_data['current_volume_usdt'],
+                group_id
+            ))
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления группы алертов: {e}")
+
+    async def save_alert(self, group_id: int, alert_data: Dict):
+        """Сохранение алерта в группе"""
+        try:
+            cursor = self.connection.cursor()
+            
+            cursor.execute("""
+                INSERT INTO alerts 
+                (group_id, symbol, alert_type, price, volume_ratio, 
+                 current_volume_usdt, average_volume_usdt, message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                group_id,
                 alert_data['symbol'],
                 alert_data.get('alert_type', 'volume_spike'),
                 alert_data['price'],
                 alert_data['volume_ratio'],
                 alert_data['current_volume_usdt'],
                 alert_data['average_volume_usdt'],
-                alert_data.get('message', ''),
-                1,
-                now,
-                now
+                alert_data.get('message', '')
             ))
 
             cursor.close()
@@ -351,48 +415,16 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка сохранения алерта: {e}")
 
-    async def update_grouped_alert(self, alert_id: int, alert_data: Dict):
-        """Обновление группированного алерта"""
-        try:
-            cursor = self.connection.cursor()
-            
-            now = datetime.now()
-            
-            cursor.execute("""
-                UPDATE alerts 
-                SET alert_count = alert_count + 1,
-                    last_alert_time = %s,
-                    updated_at = %s,
-                    price = %s,
-                    volume_ratio = GREATEST(volume_ratio, %s),
-                    current_volume_usdt = GREATEST(current_volume_usdt, %s),
-                    message = %s
-                WHERE id = %s
-            """, (
-                now,
-                now,
-                alert_data['price'],
-                alert_data['volume_ratio'],
-                alert_data['current_volume_usdt'],
-                f"{alert_data.get('message', '')} (обновлен)",
-                alert_id
-            ))
-
-            cursor.close()
-
-        except Exception as e:
-            logger.error(f"Ошибка обновления группированного алерта: {e}")
-
-    async def get_alerts(self, limit: int = 100) -> List[Dict]:
-        """Получить список алертов с информацией о группировке"""
+    async def get_alert_groups(self, limit: int = 100) -> List[Dict]:
+        """Получить список групп алертов"""
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
-                SELECT id, symbol, alert_type, price, volume_ratio, 
-                       current_volume_usdt, average_volume_usdt, message,
-                       alert_count, first_alert_time, last_alert_time,
-                       created_at, updated_at
-                FROM alerts 
+                SELECT id, symbol, alert_type, first_alert_time, last_alert_time,
+                       alert_count, max_volume_ratio, max_price, max_volume_usdt,
+                       is_active, created_at, updated_at
+                FROM alert_groups 
+                WHERE is_active = TRUE
                 ORDER BY last_alert_time DESC 
                 LIMIT %s
             """, (limit,))
@@ -403,8 +435,61 @@ class DatabaseManager:
             return [dict(row) for row in result]
 
         except Exception as e:
-            logger.error(f"Ошибка получения алертов: {e}")
+            logger.error(f"Ошибка получения групп алертов: {e}")
             return []
+
+    async def get_alerts_in_group(self, group_id: int) -> List[Dict]:
+        """Получить алерты в группе"""
+        try:
+            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT id, price, volume_ratio, current_volume_usdt, 
+                       average_volume_usdt, message, telegram_sent, created_at
+                FROM alerts 
+                WHERE group_id = %s
+                ORDER BY created_at DESC
+            """, (group_id,))
+
+            result = cursor.fetchall()
+            cursor.close()
+
+            return [dict(row) for row in result]
+
+        except Exception as e:
+            logger.error(f"Ошибка получения алертов в группе: {e}")
+            return []
+
+    async def delete_alert_group(self, group_id: int):
+        """Удалить группу алертов"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("UPDATE alert_groups SET is_active = FALSE WHERE id = %s", (group_id,))
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка удаления группы алертов: {e}")
+
+    async def clear_all_alerts(self):
+        """Очистить все алерты"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("UPDATE alert_groups SET is_active = FALSE")
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка очистки алертов: {e}")
+
+    async def mark_telegram_sent(self, alert_id: int):
+        """Отметить алерт как отправленный в Telegram"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("""
+                UPDATE alerts SET telegram_sent = TRUE WHERE id = %s
+            """, (alert_id,))
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка отметки Telegram: {e}")
 
     async def get_historical_long_volumes(self, symbol: str, hours: int, offset_minutes: int = 0) -> List[float]:
         """Получить объемы LONG свечей за указанный период"""

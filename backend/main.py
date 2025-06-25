@@ -10,11 +10,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from database import DatabaseManager
 from bybit_client import BybitWebSocketClient
 from volume_analyzer import VolumeAnalyzer
 from price_filter import PriceFilter
+from telegram_bot import TelegramBot
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -34,11 +36,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Pydantic модели
+class WatchlistUpdate(BaseModel):
+    id: int
+    symbol: str
+    is_active: bool
+
+class WatchlistAdd(BaseModel):
+    symbol: str
+
 # Глобальные переменные
 db_manager = None
 bybit_client = None
 volume_analyzer = None
 price_filter = None
+telegram_bot = None
 
 class ConnectionManager:
     def __init__(self):
@@ -74,15 +86,18 @@ manager = ConnectionManager()
 
 @app.on_event("startup")
 async def startup_event():
-    global db_manager, bybit_client, volume_analyzer, price_filter
+    global db_manager, bybit_client, volume_analyzer, price_filter, telegram_bot
     
     try:
         # Инициализация базы данных
         db_manager = DatabaseManager()
         await db_manager.initialize()
         
+        # Инициализация Telegram бота
+        telegram_bot = TelegramBot()
+        
         # Инициализация анализатора объемов
-        volume_analyzer = VolumeAnalyzer(db_manager)
+        volume_analyzer = VolumeAnalyzer(db_manager, telegram_bot)
         
         # Инициализация фильтра цен
         price_filter = PriceFilter(db_manager)
@@ -108,6 +123,10 @@ async def startup_event():
         
         # Периодическое обновление списка торговых пар
         asyncio.create_task(periodic_watchlist_update())
+        
+        # Отправляем уведомление о запуске в Telegram
+        if telegram_bot.enabled:
+            await telegram_bot.send_system_message("Система анализа объемов запущена")
         
         logger.info("Приложение успешно запущено")
         
@@ -147,11 +166,13 @@ async def periodic_watchlist_update():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global bybit_client, price_filter
+    global bybit_client, price_filter, telegram_bot
     if bybit_client:
         await bybit_client.stop()
     if price_filter:
         await price_filter.stop()
+    if telegram_bot and telegram_bot.enabled:
+        await telegram_bot.send_system_message("Система анализа объемов остановлена")
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -180,12 +201,88 @@ async def get_watchlist():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/watchlist")
+async def add_to_watchlist(item: WatchlistAdd):
+    """Добавить пару в watchlist"""
+    try:
+        await db_manager.add_to_watchlist(item.symbol)
+        await manager.broadcast(json.dumps({
+            "type": "watchlist_updated",
+            "action": "added",
+            "symbol": item.symbol
+        }))
+        return {"status": "success", "message": f"Пара {item.symbol} добавлена"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/watchlist/{item_id}")
+async def update_watchlist_item(item_id: int, item: WatchlistUpdate):
+    """Обновить элемент watchlist"""
+    try:
+        await db_manager.update_watchlist_item(item_id, item.symbol, item.is_active)
+        await manager.broadcast(json.dumps({
+            "type": "watchlist_updated",
+            "action": "updated",
+            "item": item.dict()
+        }))
+        return {"status": "success", "message": "Элемент обновлен"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/watchlist/{item_id}")
+async def delete_watchlist_item(item_id: int):
+    """Удалить элемент из watchlist"""
+    try:
+        await db_manager.remove_from_watchlist(item_id=item_id)
+        await manager.broadcast(json.dumps({
+            "type": "watchlist_updated",
+            "action": "deleted",
+            "item_id": item_id
+        }))
+        return {"status": "success", "message": "Элемент удален"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/alerts")
 async def get_alerts(limit: int = 100):
-    """Получить список алертов"""
+    """Получить список групп алертов"""
     try:
-        alerts = await db_manager.get_alerts(limit)
+        alert_groups = await db_manager.get_alert_groups(limit)
+        return {"alert_groups": alert_groups}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/alerts/{group_id}/details")
+async def get_alert_details(group_id: int):
+    """Получить детали группы алертов"""
+    try:
+        alerts = await db_manager.get_alerts_in_group(group_id)
         return {"alerts": alerts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/alerts/{group_id}")
+async def delete_alert_group(group_id: int):
+    """Удалить группу алертов"""
+    try:
+        await db_manager.delete_alert_group(group_id)
+        await manager.broadcast(json.dumps({
+            "type": "alert_deleted",
+            "group_id": group_id
+        }))
+        return {"status": "success", "message": "Группа алертов удалена"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/alerts")
+async def clear_all_alerts():
+    """Очистить все алерты"""
+    try:
+        await db_manager.clear_all_alerts()
+        await manager.broadcast(json.dumps({
+            "type": "alerts_cleared"
+        }))
+        return {"status": "success", "message": "Все алерты очищены"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -195,7 +292,10 @@ async def get_settings():
     if volume_analyzer and price_filter:
         return {
             "volume_analyzer": volume_analyzer.get_settings(),
-            "price_filter": price_filter.settings
+            "price_filter": price_filter.settings,
+            "telegram": {
+                "enabled": telegram_bot.enabled if telegram_bot else False
+            }
         }
     return {"error": "Анализатор не инициализирован"}
 
