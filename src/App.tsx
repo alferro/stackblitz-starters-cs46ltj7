@@ -86,7 +86,7 @@ function App() {
   useEffect(() => {
     connectWebSocket();
     loadInitialData();
-    
+
     return () => {
       if (wsRef.current) {
         wsRef.current.close();
@@ -100,14 +100,14 @@ function App() {
   const connectWebSocket = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
+
     wsRef.current = new WebSocket(wsUrl);
-    
+
     wsRef.current.onopen = () => {
       console.log('WebSocket подключен');
       setIsConnected(true);
     };
-    
+
     wsRef.current.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -116,17 +116,17 @@ function App() {
         console.error('Ошибка парсинга сообщения:', error);
       }
     };
-    
+
     wsRef.current.onclose = () => {
       console.log('WebSocket отключен');
       setIsConnected(false);
-      
+
       // Автоматическое переподключение через 5 секунд
       reconnectTimeoutRef.current = setTimeout(() => {
         connectWebSocket();
       }, 5000);
     };
-    
+
     wsRef.current.onerror = (error) => {
       console.error('WebSocket ошибка:', error);
       setIsConnected(false);
@@ -144,12 +144,12 @@ function App() {
           newMap.set(data.symbol, data);
           return newMap;
         });
-        
+
         if (data.alert) {
           // Если это группированный алерт, обновляем существующий
           if (data.alert.is_grouped) {
-            setAlerts(prev => prev.map(alert => 
-              alert.symbol === data.alert.symbol && 
+            setAlerts(prev => prev.map(alert =>
+              alert.symbol === data.alert.symbol &&
               new Date(alert.last_alert_time).getTime() > Date.now() - (settings.volume_analyzer.alert_grouping_minutes * 60 * 1000)
                 ? { ...alert, alert_count: data.alert.group_count, last_alert_time: data.alert.timestamp }
                 : alert
@@ -166,15 +166,15 @@ function App() {
             };
             setAlerts(prev => [newAlert, ...prev.slice(0, 99)]);
           }
-          
+
           setStats(prev => ({ ...prev, alerts_count: prev.alerts_count + 1 }));
         }
-        
+
         setStats(prev => ({
           ...prev,
           total_candles: prev.total_candles + 1,
-          long_candles: parseFloat(data.data.close) > parseFloat(data.data.open) 
-            ? prev.long_candles + 1 
+          long_candles: parseFloat(data.data.close) > parseFloat(data.data.open)
+            ? prev.long_candles + 1
             : prev.long_candles
         }));
         break;
@@ -270,7 +270,7 @@ function App() {
       const end = new Date(endTime);
       const diffMs = end.getTime() - start.getTime();
       const diffMinutes = Math.floor(diffMs / (1000 * 60));
-      
+
       if (diffMinutes < 1) {
         return 'менее минуты';
       } else if (diffMinutes < 60) {
@@ -341,7 +341,7 @@ function App() {
               <Activity className="w-8 h-8 text-blue-400" />
             </div>
           </div>
-          
+
           <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
             <div className="flex items-center justify-between">
               <div>
@@ -351,7 +351,7 @@ function App() {
               <TrendingUp className="w-8 h-8 text-green-400" />
             </div>
           </div>
-          
+
           <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
             <div className="flex items-center justify-between">
               <div>
@@ -361,7 +361,7 @@ function App() {
               <AlertTriangle className="w-8 h-8 text-yellow-400" />
             </div>
           </div>
-          
+
           <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
             <div className="flex items-center justify-between">
               <div>
@@ -433,7 +433,7 @@ function App() {
                       liveDataArray.map((item, index) => {
                         const isLong = parseFloat(item.data.close) > parseFloat(item.data.open);
                         const volumeUsdt = parseFloat(item.data.volume) * parseFloat(item.data.close);
-                        
+
                         return (
                           <tr key={`${item.symbol}-${index}`} className="border-b border-gray-700 hover:bg-gray-800 hover:bg-opacity-50">
                             <td className="py-3 px-4 font-medium">{item.symbol}</td>
@@ -540,7 +540,7 @@ function App() {
                           </p>
                         </div>
                       </div>
-                      
+
                       <div className="grid grid-cols-2 gap-4 text-sm mb-3">
                         <div>
                           <span className="text-gray-400">Текущий объем:</span>
@@ -594,7 +594,7 @@ function App() {
                 ✕
               </button>
             </div>
-            
+
             <div className="space-y-6">
               <div>
                 <h4 className="text-lg font-semibold mb-4 text-blue-400">Анализатор объемов</h4>
@@ -616,7 +616,7 @@ function App() {
                       className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
                     />
                   </div>
-                  
+
                   <div>
                     <label className="block text-sm font-medium mb-2">Смещение (минуты)</label>
                     <input
@@ -634,7 +634,7 @@ function App() {
                       className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
                     />
                   </div>
-                  
+
                   <div>
                     <label className="block text-sm font-medium mb-2">Множитель объема</label>
                     <input
@@ -653,7 +653,7 @@ function App() {
                       className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
                     />
                   </div>
-                  
+
                   <div>
                     <label className="block text-sm font-medium mb-2">Мин. объем (USDT)</label>
                     <input
@@ -670,7 +670,7 @@ function App() {
                       className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
                     />
                   </div>
-                  
+
                   <div className="col-span-2">
                     <label className="block text-sm font-medium mb-2">Группировка алертов (минуты)</label>
                     <input
