@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Settings, TrendingUp, AlertTriangle, BarChart3, Wifi, WifiOff, Clock, ChevronDown, ChevronRight, Trash2, Edit, Plus, X, Eye, EyeOff } from 'lucide-react';
+import { Activity, Settings, TrendingUp, AlertTriangle, BarChart3, Wifi, WifiOff, Clock, ChevronDown, ChevronRight, Trash2, Edit, Plus, X, Eye, EyeOff, CheckCircle, XCircle, Zap, Target, Flame, TrendingDown } from 'lucide-react';
 
 interface Alert {
   id: number;
+  alert_stage: string;
+  is_true_signal: boolean | null;
   price: number;
   volume_ratio: number;
   current_volume_usdt: number;
   average_volume_usdt: number;
+  candle_start_time: number;
   message: string;
   telegram_sent: boolean;
   created_at: string;
@@ -25,6 +28,32 @@ interface AlertGroup {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+}
+
+interface ConsecutiveAlert {
+  id: number;
+  symbol: string;
+  consecutive_count: number;
+  message: string;
+  telegram_sent: boolean;
+  created_at: string;
+}
+
+interface PriorityAlert {
+  id: number;
+  symbol: string;
+  alert_type: string;
+  alert_stage: string;
+  is_true_signal: boolean | null;
+  price: number;
+  volume_ratio: number;
+  current_volume_usdt: number;
+  average_volume_usdt: number;
+  consecutive_count: number;
+  candle_start_time: number;
+  message: string;
+  telegram_sent: boolean;
+  created_at: string;
 }
 
 interface WatchlistItem {
@@ -60,6 +89,8 @@ interface Stats {
   total_candles: number;
   long_candles: number;
   alerts_count: number;
+  consecutive_alerts_count: number;
+  priority_alerts_count: number;
   pairs_count: number;
   last_update: string;
 }
@@ -67,6 +98,8 @@ interface Stats {
 function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [alertGroups, setAlertGroups] = useState<AlertGroup[]>([]);
+  const [consecutiveAlerts, setConsecutiveAlerts] = useState<ConsecutiveAlert[]>([]);
+  const [priorityAlerts, setPriorityAlerts] = useState<PriorityAlert[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
   const [groupDetails, setGroupDetails] = useState<Map<number, Alert[]>>(new Map());
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
@@ -75,10 +108,12 @@ function App() {
     total_candles: 0,
     long_candles: 0,
     alerts_count: 0,
+    consecutive_alerts_count: 0,
+    priority_alerts_count: 0,
     pairs_count: 0,
     last_update: ''
   });
-  const [activeTab, setActiveTab] = useState<'live' | 'watchlist' | 'alerts'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'watchlist' | 'alerts' | 'consecutive' | 'priority'>('live');
   const [showSettings, setShowSettings] = useState(false);
   const [showAddPair, setShowAddPair] = useState(false);
   const [newPairSymbol, setNewPairSymbol] = useState('');
@@ -89,7 +124,10 @@ function App() {
       offset_minutes: 0,
       volume_multiplier: 2.0,
       min_volume_usdt: 1000,
-      alert_grouping_minutes: 5
+      alert_grouping_minutes: 5,
+      consecutive_long_count: 3,
+      volume_alerts_enabled: true,
+      consecutive_alerts_enabled: true
     },
     price_filter: {
       price_check_interval_minutes: 5,
@@ -227,6 +265,12 @@ function App() {
         setExpandedGroups(new Set());
         setGroupDetails(new Map());
         break;
+      case 'consecutive_alerts_cleared':
+        setConsecutiveAlerts([]);
+        break;
+      case 'priority_alerts_cleared':
+        setPriorityAlerts([]);
+        break;
     }
   };
 
@@ -235,6 +279,8 @@ function App() {
       await Promise.all([
         loadWatchlist(),
         loadAlertGroups(),
+        loadConsecutiveAlerts(),
+        loadPriorityAlerts(),
         loadSettings(),
         loadStats()
       ]);
@@ -260,6 +306,26 @@ function App() {
       setAlertGroups(data.alert_groups || []);
     } catch (error) {
       console.error('Ошибка загрузки алертов:', error);
+    }
+  };
+
+  const loadConsecutiveAlerts = async () => {
+    try {
+      const response = await fetch('/api/consecutive-alerts');
+      const data = await response.json();
+      setConsecutiveAlerts(data.consecutive_alerts || []);
+    } catch (error) {
+      console.error('Ошибка загрузки consecutive алертов:', error);
+    }
+  };
+
+  const loadPriorityAlerts = async () => {
+    try {
+      const response = await fetch('/api/priority-alerts');
+      const data = await response.json();
+      setPriorityAlerts(data.priority_alerts || []);
+    } catch (error) {
+      console.error('Ошибка загрузки приоритетных алертов:', error);
     }
   };
 
@@ -325,11 +391,31 @@ function App() {
   };
 
   const clearAllAlerts = async () => {
-    if (confirm('Очистить все алерты?')) {
+    if (confirm('Очистить все алерты по объему?')) {
       try {
         await fetch('/api/alerts', { method: 'DELETE' });
       } catch (error) {
         console.error('Ошибка очистки алертов:', error);
+      }
+    }
+  };
+
+  const clearConsecutiveAlerts = async () => {
+    if (confirm('Очистить все алерты по подряд идущим свечам?')) {
+      try {
+        await fetch('/api/consecutive-alerts', { method: 'DELETE' });
+      } catch (error) {
+        console.error('Ошибка очистки consecutive алертов:', error);
+      }
+    }
+  };
+
+  const clearPriorityAlerts = async () => {
+    if (confirm('Очистить все приоритетные алерты?')) {
+      try {
+        await fetch('/api/priority-alerts', { method: 'DELETE' });
+      } catch (error) {
+        console.error('Ошибка очистки приоритетных алертов:', error);
       }
     }
   };
@@ -404,6 +490,19 @@ function App() {
       console.error('Ошибка сохранения настроек:', error);
       alert('Ошибка сохранения настроек');
     }
+  };
+
+  const getSignalIcon = (alert: Alert) => {
+    if (alert.alert_stage === 'initial') {
+      return <Zap className="w-4 h-4 text-yellow-400" title="Начальный сигнал" />;
+    } else if (alert.alert_stage === 'final') {
+      if (alert.is_true_signal) {
+        return <CheckCircle className="w-4 h-4 text-green-400" title="Истинный сигнал" />;
+      } else {
+        return <XCircle className="w-4 h-4 text-red-400" title="Ложный сигнал" />;
+      }
+    }
+    return null;
   };
 
   const formatPrice = (price: number) => {
@@ -510,7 +609,7 @@ function App() {
 
       {/* Stats Cards */}
       <div className="container mx-auto px-6 py-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-6 mb-8">
           <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
             <div className="flex items-center justify-between">
               <div>
@@ -534,10 +633,30 @@ function App() {
           <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-gray-400 text-sm">Алертов</p>
+                <p className="text-gray-400 text-sm">Алертов объем</p>
                 <p className="text-2xl font-bold text-yellow-400">{stats.alerts_count}</p>
               </div>
               <AlertTriangle className="w-8 h-8 text-yellow-400" />
+            </div>
+          </div>
+
+          <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-gray-400 text-sm">Подряд LONG</p>
+                <p className="text-2xl font-bold text-orange-400">{stats.consecutive_alerts_count}</p>
+              </div>
+              <TrendingDown className="w-8 h-8 text-orange-400" />
+            </div>
+          </div>
+
+          <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl p-6 border border-gray-700">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-gray-400 text-sm">Приоритетных</p>
+                <p className="text-2xl font-bold text-red-400">{stats.priority_alerts_count}</p>
+              </div>
+              <Flame className="w-8 h-8 text-red-400" />
             </div>
           </div>
 
@@ -554,10 +673,10 @@ function App() {
 
         {/* Tabs */}
         <div className="bg-black bg-opacity-30 backdrop-blur-md rounded-xl border border-gray-700">
-          <div className="flex border-b border-gray-700">
+          <div className="flex border-b border-gray-700 overflow-x-auto">
             <button
               onClick={() => setActiveTab('live')}
-              className={`px-6 py-4 font-medium transition-colors ${
+              className={`px-6 py-4 font-medium transition-colors whitespace-nowrap ${
                 activeTab === 'live'
                   ? 'text-blue-400 border-b-2 border-blue-400'
                   : 'text-gray-400 hover:text-white'
@@ -567,7 +686,7 @@ function App() {
             </button>
             <button
               onClick={() => setActiveTab('watchlist')}
-              className={`px-6 py-4 font-medium transition-colors ${
+              className={`px-6 py-4 font-medium transition-colors whitespace-nowrap ${
                 activeTab === 'watchlist'
                   ? 'text-blue-400 border-b-2 border-blue-400'
                   : 'text-gray-400 hover:text-white'
@@ -577,13 +696,33 @@ function App() {
             </button>
             <button
               onClick={() => setActiveTab('alerts')}
-              className={`px-6 py-4 font-medium transition-colors ${
+              className={`px-6 py-4 font-medium transition-colors whitespace-nowrap ${
                 activeTab === 'alerts'
                   ? 'text-blue-400 border-b-2 border-blue-400'
                   : 'text-gray-400 hover:text-white'
               }`}
             >
-              Алерты ({alertGroups.length})
+              Алерты объем ({alertGroups.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('consecutive')}
+              className={`px-6 py-4 font-medium transition-colors whitespace-nowrap ${
+                activeTab === 'consecutive'
+                  ? 'text-blue-400 border-b-2 border-blue-400'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Подряд LONG ({consecutiveAlerts.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('priority')}
+              className={`px-6 py-4 font-medium transition-colors whitespace-nowrap ${
+                activeTab === 'priority'
+                  ? 'text-blue-400 border-b-2 border-blue-400'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Приоритетные ({priorityAlerts.length})
             </button>
           </div>
 
@@ -755,7 +894,7 @@ function App() {
             {activeTab === 'alerts' && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
-                  <h3 className="text-lg font-semibold">Группы алертов</h3>
+                  <h3 className="text-lg font-semibold">Группы алертов по объему</h3>
                   <button
                     onClick={clearAllAlerts}
                     className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors flex items-center space-x-2"
@@ -839,14 +978,21 @@ function App() {
                             {groupDetails.get(group.id)?.map((alert, index) => (
                               <div key={alert.id} className="bg-black bg-opacity-20 rounded-lg p-3 text-sm">
                                 <div className="flex justify-between items-start">
-                                  <div>
-                                    <p className="text-white">
-                                      Объем: <strong>{alert.volume_ratio}x</strong> 
-                                      (${formatVolume(alert.current_volume_usdt)})
-                                    </p>
-                                    <p className="text-gray-400">
-                                      Цена: ${formatPrice(alert.price)}
-                                    </p>
+                                  <div className="flex items-center space-x-2">
+                                    {getSignalIcon(alert)}
+                                    <div>
+                                      <p className="text-white">
+                                        Объем: <strong>{alert.volume_ratio}x</strong> 
+                                        (${formatVolume(alert.current_volume_usdt)})
+                                      </p>
+                                      <p className="text-gray-400">
+                                        Цена: ${formatPrice(alert.price)}
+                                      </p>
+                                      <p className="text-xs text-gray-500">
+                                        {alert.alert_stage === 'initial' ? 'Начальный сигнал' : 
+                                         alert.is_true_signal ? 'Истинный сигнал' : 'Ложный сигнал'}
+                                      </p>
+                                    </div>
                                   </div>
                                   <div className="text-right">
                                     <p className="text-xs text-gray-400">
@@ -866,6 +1012,108 @@ function App() {
                           </div>
                         </div>
                       )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            {activeTab === 'consecutive' && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-lg font-semibold">Алерты по подряд идущим LONG свечам</h3>
+                  <button
+                    onClick={clearConsecutiveAlerts}
+                    className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors flex items-center space-x-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Очистить все</span>
+                  </button>
+                </div>
+
+                {consecutiveAlerts.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400">
+                    Алертов по подряд идущим свечам пока нет...
+                  </div>
+                ) : (
+                  consecutiveAlerts.map((alert) => (
+                    <div key={alert.id} className="bg-orange-500 bg-opacity-10 border border-orange-500 border-opacity-30 rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                          <TrendingUp className="w-8 h-8 text-orange-400" />
+                          <div>
+                            <h4 className="font-bold text-orange-400">{alert.symbol}</h4>
+                            <p className="text-sm text-gray-300">
+                              Подряд <strong>{alert.consecutive_count}</strong> LONG свечей
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs text-gray-400">
+                            {formatDate(alert.created_at)}
+                          </p>
+                          {alert.telegram_sent && (
+                            <span className="text-xs text-green-400">📱 Отправлено</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            {activeTab === 'priority' && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-lg font-semibold">Приоритетные алерты</h3>
+                  <button
+                    onClick={clearPriorityAlerts}
+                    className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors flex items-center space-x-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Очистить все</span>
+                  </button>
+                </div>
+
+                {priorityAlerts.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400">
+                    Приоритетных алертов пока нет...
+                  </div>
+                ) : (
+                  priorityAlerts.map((alert) => (
+                    <div key={alert.id} className="bg-red-500 bg-opacity-10 border border-red-500 border-opacity-30 rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                          <Flame className="w-8 h-8 text-red-400" />
+                          <div className="flex items-center space-x-2">
+                            {alert.alert_stage === 'initial' ? (
+                              <Zap className="w-4 h-4 text-yellow-400" />
+                            ) : alert.is_true_signal ? (
+                              <CheckCircle className="w-4 h-4 text-green-400" />
+                            ) : (
+                              <XCircle className="w-4 h-4 text-red-400" />
+                            )}
+                            <div>
+                              <h4 className="font-bold text-red-400">{alert.symbol}</h4>
+                              <p className="text-sm text-gray-300">
+                                Объем: <strong>{alert.volume_ratio}x</strong> после {alert.consecutive_count} LONG свечей
+                              </p>
+                              <p className="text-sm text-gray-400">
+                                Цена: ${formatPrice(alert.price)} | Объем: ${formatVolume(alert.current_volume_usdt)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs text-gray-400">
+                            {formatDate(alert.created_at)}
+                          </p>
+                          {alert.telegram_sent && (
+                            <span className="text-xs text-green-400">📱 Отправлено</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   ))
                 )}
@@ -937,6 +1185,40 @@ function App() {
               <div>
                 <h4 className="text-lg font-semibold mb-4 text-blue-400">Анализатор объемов</h4>
                 <div className="grid grid-cols-2 gap-4">
+                  <div className="col-span-2 flex items-center space-x-4">
+                    <label className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        checked={settings.volume_analyzer.volume_alerts_enabled}
+                        onChange={(e) => setSettings(prev => ({
+                          ...prev,
+                          volume_analyzer: {
+                            ...prev.volume_analyzer,
+                            volume_alerts_enabled: e.target.checked
+                          }
+                        }))}
+                        className="w-4 h-4"
+                      />
+                      <span>Включить алерты по объему</span>
+                    </label>
+                    
+                    <label className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        checked={settings.volume_analyzer.consecutive_alerts_enabled}
+                        onChange={(e) => setSettings(prev => ({
+                          ...prev,
+                          volume_analyzer: {
+                            ...prev.volume_analyzer,
+                            consecutive_alerts_enabled: e.target.checked
+                          }
+                        }))}
+                        className="w-4 h-4"
+                      />
+                      <span>Включить алерты по подряд идущим свечам</span>
+                    </label>
+                  </div>
+
                   <div>
                     <label className="block text-sm font-medium mb-2">Период анализа (часы)</label>
                     <input
@@ -1009,7 +1291,25 @@ function App() {
                     />
                   </div>
 
-                  <div className="col-span-2">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Подряд LONG свечей</label>
+                    <input
+                      type="number"
+                      min="2"
+                      max="10"
+                      value={settings.volume_analyzer.consecutive_long_count}
+                      onChange={(e) => setSettings(prev => ({
+                        ...prev,
+                        volume_analyzer: {
+                          ...prev.volume_analyzer,
+                          consecutive_long_count: parseInt(e.target.value)
+                        }
+                      }))}
+                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block text-sm font-medium mb-2">Группировка алертов (минуты)</label>
                     <input
                       type="number"

@@ -245,10 +245,28 @@ async def delete_watchlist_item(item_id: int):
 
 @app.get("/api/alerts")
 async def get_alerts(limit: int = 100):
-    """Получить список групп алертов"""
+    """Получить список групп алертов по объему"""
     try:
         alert_groups = await db_manager.get_alert_groups(limit)
         return {"alert_groups": alert_groups}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/consecutive-alerts")
+async def get_consecutive_alerts(limit: int = 100):
+    """Получить список алертов по подряд идущим LONG свечам"""
+    try:
+        consecutive_alerts = await db_manager.get_consecutive_alerts(limit)
+        return {"consecutive_alerts": consecutive_alerts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/priority-alerts")
+async def get_priority_alerts(limit: int = 100):
+    """Получить список приоритетных алертов"""
+    try:
+        priority_alerts = await db_manager.get_priority_alerts(limit)
+        return {"priority_alerts": priority_alerts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -276,13 +294,37 @@ async def delete_alert_group(group_id: int):
 
 @app.delete("/api/alerts")
 async def clear_all_alerts():
-    """Очистить все алерты"""
+    """Очистить все алерты по объему"""
     try:
         await db_manager.clear_all_alerts()
         await manager.broadcast(json.dumps({
             "type": "alerts_cleared"
         }))
         return {"status": "success", "message": "Все алерты очищены"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/consecutive-alerts")
+async def clear_consecutive_alerts():
+    """Очистить все consecutive алерты"""
+    try:
+        await db_manager.clear_consecutive_alerts()
+        await manager.broadcast(json.dumps({
+            "type": "consecutive_alerts_cleared"
+        }))
+        return {"status": "success", "message": "Все consecutive алерты очищены"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/priority-alerts")
+async def clear_priority_alerts():
+    """Очистить все приоритетные алерты"""
+    try:
+        await db_manager.clear_priority_alerts()
+        await manager.broadcast(json.dumps({
+            "type": "priority_alerts_cleared"
+        }))
+        return {"status": "success", "message": "Все приоритетные алерты очищены"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

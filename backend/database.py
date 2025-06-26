@@ -76,7 +76,7 @@ class DatabaseManager:
                 )
             """)
 
-            # Создаем таблицу для групп алертов
+            # Создаем таблицу для групп алертов по объему
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS alert_groups (
                     id SERIAL PRIMARY KEY,
@@ -101,10 +101,45 @@ class DatabaseManager:
                     group_id INTEGER REFERENCES alert_groups(id) ON DELETE CASCADE,
                     symbol VARCHAR(20) NOT NULL,
                     alert_type VARCHAR(50) NOT NULL,
+                    alert_stage VARCHAR(20) DEFAULT 'initial',
+                    is_true_signal BOOLEAN,
                     price DECIMAL(20, 8) NOT NULL,
                     volume_ratio DECIMAL(10, 2) NOT NULL,
                     current_volume_usdt DECIMAL(20, 8) NOT NULL,
                     average_volume_usdt DECIMAL(20, 8) NOT NULL,
+                    candle_start_time BIGINT,
+                    message TEXT,
+                    telegram_sent BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Создаем таблицу для алертов по подряд идущим LONG свечам
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS consecutive_alerts (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    consecutive_count INTEGER NOT NULL,
+                    message TEXT,
+                    telegram_sent BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Создаем таблицу для приоритетных алертов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS priority_alerts (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    alert_type VARCHAR(50) NOT NULL,
+                    alert_stage VARCHAR(20) DEFAULT 'initial',
+                    is_true_signal BOOLEAN,
+                    price DECIMAL(20, 8) NOT NULL,
+                    volume_ratio DECIMAL(10, 2) NOT NULL,
+                    current_volume_usdt DECIMAL(20, 8) NOT NULL,
+                    average_volume_usdt DECIMAL(20, 8) NOT NULL,
+                    consecutive_count INTEGER,
+                    candle_start_time BIGINT,
                     message TEXT,
                     telegram_sent BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -132,6 +167,16 @@ class DatabaseManager:
                 ON alerts(group_id, created_at)
             """)
 
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_consecutive_alerts_symbol_time 
+                ON consecutive_alerts(symbol, created_at)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_priority_alerts_symbol_time 
+                ON priority_alerts(symbol, created_at)
+            """)
+
             cursor.close()
             logger.info("Таблицы успешно созданы")
 
@@ -144,30 +189,142 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor()
 
-            # Проверяем и добавляем новые колонки в таблицу watchlist
+            # Проверяем и добавляем новые колонки в таблицу alerts
             cursor.execute("""
                 SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'watchlist' AND column_name = 'price_drop_percentage'
+                WHERE table_name = 'alerts' AND column_name = 'alert_stage'
             """)
 
             if not cursor.fetchone():
-                logger.info("Добавление новых колонок в таблицу watchlist...")
+                logger.info("Добавление новых колонок в таблицу alerts...")
 
                 cursor.execute("""
-                    ALTER TABLE watchlist 
-                    ADD COLUMN IF NOT EXISTS price_drop_percentage DECIMAL(5, 2),
-                    ADD COLUMN IF NOT EXISTS current_price DECIMAL(20, 8),
-                    ADD COLUMN IF NOT EXISTS historical_price DECIMAL(20, 8),
-                    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    ALTER TABLE alerts 
+                    ADD COLUMN IF NOT EXISTS alert_stage VARCHAR(20) DEFAULT 'initial',
+                    ADD COLUMN IF NOT EXISTS is_true_signal BOOLEAN,
+                    ADD COLUMN IF NOT EXISTS candle_start_time BIGINT
                 """)
 
-                logger.info("Новые колонки добавлены в таблицу watchlist")
+                logger.info("Новые колонки добавлены в таблицу alerts")
 
             cursor.close()
 
         except Exception as e:
             logger.error(f"Ошибка обновления таблиц: {e}")
 
+    async def save_consecutive_alert(self, alert_data: Dict):
+        """Сохранение алерта по подряд идущим LONG свечам"""
+        try:
+            cursor = self.connection.cursor()
+            
+            cursor.execute("""
+                INSERT INTO consecutive_alerts 
+                (symbol, consecutive_count, message)
+                VALUES (%s, %s, %s)
+            """, (
+                alert_data['symbol'],
+                alert_data['consecutive_count'],
+                alert_data.get('message', '')
+            ))
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка сохранения consecutive алерта: {e}")
+
+    async def save_priority_alert(self, alert_data: Dict):
+        """Сохранение приоритетного алерта"""
+        try:
+            cursor = self.connection.cursor()
+            
+            cursor.execute("""
+                INSERT INTO priority_alerts 
+                (symbol, alert_type, alert_stage, is_true_signal, price, volume_ratio,
+                 current_volume_usdt, average_volume_usdt, consecutive_count, 
+                 candle_start_time, message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                alert_data['symbol'],
+                alert_data.get('alert_type', 'volume_spike'),
+                alert_data.get('alert_stage', 'initial'),
+                alert_data.get('is_true_signal'),
+                alert_data['price'],
+                alert_data['volume_ratio'],
+                alert_data['current_volume_usdt'],
+                alert_data['average_volume_usdt'],
+                alert_data.get('consecutive_count'),
+                alert_data.get('candle_start_time'),
+                alert_data.get('message', '')
+            ))
+
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка сохранения приоритетного алерта: {e}")
+
+    async def get_consecutive_alerts(self, limit: int = 100) -> List[Dict]:
+        """Получить список алертов по подряд идущим LONG свечам"""
+        try:
+            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT id, symbol, consecutive_count, message, telegram_sent, created_at
+                FROM consecutive_alerts 
+                ORDER BY created_at DESC 
+                LIMIT %s
+            """, (limit,))
+
+            result = cursor.fetchall()
+            cursor.close()
+
+            return [dict(row) for row in result]
+
+        except Exception as e:
+            logger.error(f"Ошибка получения consecutive алертов: {e}")
+            return []
+
+    async def get_priority_alerts(self, limit: int = 100) -> List[Dict]:
+        """Получить список приоритетных алертов"""
+        try:
+            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT id, symbol, alert_type, alert_stage, is_true_signal, price,
+                       volume_ratio, current_volume_usdt, average_volume_usdt,
+                       consecutive_count, candle_start_time, message, telegram_sent, created_at
+                FROM priority_alerts 
+                ORDER BY created_at DESC 
+                LIMIT %s
+            """, (limit,))
+
+            result = cursor.fetchall()
+            cursor.close()
+
+            return [dict(row) for row in result]
+
+        except Exception as e:
+            logger.error(f"Ошибка получения приоритетных алертов: {e}")
+            return []
+
+    async def clear_consecutive_alerts(self):
+        """Очистить все consecutive алерты"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("DELETE FROM consecutive_alerts")
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка очистки consecutive алертов: {e}")
+
+    async def clear_priority_alerts(self):
+        """Очистить все приоритетные алерты"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("DELETE FROM priority_alerts")
+            cursor.close()
+
+        except Exception as e:
+            logger.error(f"Ошибка очистки приоритетных алертов: {e}")
+
+    # Остальные методы остаются без изменений...
     async def get_watchlist(self) -> List[str]:
         """Получить список активных торговых пар"""
         try:
@@ -396,17 +553,20 @@ class DatabaseManager:
             
             cursor.execute("""
                 INSERT INTO alerts 
-                (group_id, symbol, alert_type, price, volume_ratio, 
-                 current_volume_usdt, average_volume_usdt, message)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (group_id, symbol, alert_type, alert_stage, is_true_signal, price, volume_ratio, 
+                 current_volume_usdt, average_volume_usdt, candle_start_time, message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 group_id,
                 alert_data['symbol'],
                 alert_data.get('alert_type', 'volume_spike'),
+                alert_data.get('alert_stage', 'initial'),
+                alert_data.get('is_true_signal'),
                 alert_data['price'],
                 alert_data['volume_ratio'],
                 alert_data['current_volume_usdt'],
                 alert_data['average_volume_usdt'],
+                alert_data.get('candle_start_time'),
                 alert_data.get('message', '')
             ))
 
@@ -443,8 +603,9 @@ class DatabaseManager:
         try:
             cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
-                SELECT id, price, volume_ratio, current_volume_usdt, 
-                       average_volume_usdt, message, telegram_sent, created_at
+                SELECT id, alert_stage, is_true_signal, price, volume_ratio, 
+                       current_volume_usdt, average_volume_usdt, candle_start_time,
+                       message, telegram_sent, created_at
                 FROM alerts 
                 WHERE group_id = %s
                 ORDER BY created_at DESC
